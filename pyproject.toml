@@ -3,13 +3,19 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ciparity"
+name = "ciparity-actions"
 version = "0.1.0"
 description = "Compare local development conditions with declared GitHub Actions jobs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = ["typer>=0.16,<1", "rich>=13", "PyYAML>=6,<7", "packaging>=24"]
 
 [project.urls]
