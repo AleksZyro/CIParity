@@ -4,15 +4,21 @@ CIParity helps you understand why your project behaves differently locally and i
 
 ## Quickstart
 
+The distribution is named `ciparity-actions`. The command and Python import are both `ciparity`. Use a dedicated virtual environment so that another distribution cannot replace the same command or import.
+
+The source installation below works today. The planned PyPI installation command is `python -m pip install ciparity-actions` once publication is confirmed. For a GitHub release, download its wheel from the [release page](https://github.com/AleksZyro/CIParity/releases) and install the local file with pip.
+
 From a source checkout or an unpacked source distribution, create and activate a virtual environment with Python 3.11 or newer. Install CIParity from that directory.
 
 ```sh
 python -m pip install -e .
 ciparity --version
+ciparity --help
+ciparity inspect local
 ciparity inspect ci --root examples/basic
 ```
 
-The example workflow has three variants after its exclusion rule.
+Run `ciparity inspect ci` from a repository containing GitHub Actions workflows to inspect that repository. The bundled example workflow has three variants after its exclusion rule.
 
 | Variant | Runner | Python selector |
 | --- | --- | --- |
