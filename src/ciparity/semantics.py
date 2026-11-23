@@ -20,6 +20,7 @@ RUNNERS = {f"{prefix}-{tag}": family for prefix, (family, tags) in HOSTED.items(
 RUNNERS.update({f"ubuntu-{tag}-arm": "Linux" for tag in ("22.04", "24.04", "26.04")})
 RUNNERS["windows-11-arm"] = "Windows"
 VERSION = re.compile(r"(?:0|[1-9][0-9]?)(?:\.(?:0|[1-9][0-9]?)){0,2}")
+MATRIX_CONDITION = re.compile(r"matrix\.([A-Za-z_][\w-]*)\s*(==|!=)\s*'([^']*)'", re.ASCII)
 COMMANDS = {
     "pytest": ("pytest", "test", "pytest"),
     "python -m pytest": ("python -m pytest", "test", "python"),
@@ -46,6 +47,7 @@ def ci_environment(job: Job, variant: dict[str, Any]) -> CIEnvironment:
     if any(label and label.lower() == "self-hosted" for label in labels):
         return CIEnvironment("self-hosted", None, None, job.container)
     label = labels[0] if len(labels) == 1 else None
+    label = label.lower() if label and label.isascii() else None
     if label not in RUNNERS or label is None:
         return CIEnvironment("unresolved", None, None, job.container)
     arch = "arm64" if label.endswith("-arm") else None
@@ -57,6 +59,28 @@ def ci_environment(job: Job, variant: dict[str, Any]) -> CIEnvironment:
         None if job.container else arch,
         job.container,
     )
+
+
+def condition_value(condition: str | bool | None, variant: dict[str, Any]) -> bool | None:
+    """Whether a declared guard permits this variant, assuming normal preceding success."""
+    if condition is None:
+        return True
+    if isinstance(condition, bool):
+        return condition
+    expression = condition.strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    if expression in {"true", "false"}:
+        return expression == "true"
+    match = MATRIX_CONDITION.fullmatch(expression)
+    if not match:
+        return None
+    left = variant.get(match[1])
+    right = match[3]
+    if not isinstance(left, str) or not (left.isascii() and right.isascii()):
+        return None
+    equal = left.lower() == right.lower()
+    return equal if match[2] == "==" else not equal
 
 
 def shell_for(step: Step, ci: CIEnvironment, variant: dict[str, Any]) -> str | None:

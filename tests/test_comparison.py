@@ -5,7 +5,8 @@ import pytest
 from ciparity.compare import LocalContext, compare, select_job, select_variant
 from ciparity.local import inspect_local
 from ciparity.models import InputError, Status, Unsupported
-from ciparity.semantics import ci_environment, compare_python, shell_for
+from ciparity.reporting import ci_view
+from ciparity.semantics import ci_environment, compare_python, condition_value, shell_for
 from ciparity.workflows import parse_workflow
 
 
@@ -41,6 +42,7 @@ def job_for(runner="ubuntu-latest", extra=""):
     ("label", "family", "arch", "shell"),
     [
         ("macos-latest", "macOS", None, None),
+        ("macOS-latest", "macOS", None, None),
         ("ubuntu-22.04", "Linux", "x64", None),
         ("windows-2022", "Windows", "x64", "pwsh"),
         ("ubuntu-24.04-arm", "Linux", "arm64", None),
@@ -116,3 +118,73 @@ jobs:
     assert findings["os"].ci.source == "declared_ci"
     assert all(f.reason and f.possible_impact and f.next_check for f in findings.values())
     assert "literal" not in str(asdict(result))
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        (False, False),
+        (None, True),
+        ("${{ true }}", True),
+        ("matrix.os == 'LINUX'", True),
+        ("${{ matrix.os != 'linux' }}", False),
+        ("matrix.missing == ''", None),
+        ("matrix.number == '1'", None),
+        ("success() && matrix.os == 'linux'", None),
+        ("matrix.os == 'é'", None),
+    ],
+)
+def test_condition_subset(condition, expected):
+    assert condition_value(condition, {"os": "linux", "number": 1}) is expected
+
+
+def test_conditional_steps_and_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAG", "value")
+    wf = parse_workflow(
+        """
+on: push
+jobs:
+  test:
+    runs-on: macOS-latest
+    strategy: {matrix: {arch: [ppc64le, arm64]}}
+    steps:
+      - if: matrix.arch != 'ppc64le'
+        uses: actions/setup-python@v6
+        with: {python-version: '3.11'}
+      - if: matrix.arch == 'ARM64'
+        run: pytest
+        shell: pwsh
+      - if: failure()
+        env: {FLAG: some-value}
+        run: pytest
+        shell: pwsh
+      - env: {FLAG: another-value}
+        run: pytest
+        shell: bash
+""",
+        "ci.yml",
+    )
+    job = wf.jobs[0]
+    local = inspect_local(tmp_path, env_names={"FLAG"})
+    local.os, local.project_python = "macOS", "3.11.9"
+    ctx = LocalContext("bash", ".", "pytest")
+    report = compare(local, wf, job, 1, ctx)
+    by_id = {f.id: f for f in report.findings}
+    assert "shell.2" not in by_id and "python.1" not in by_id
+    assert by_id["shell.3"].status is Status.POTENTIAL
+    assert by_id["command.3"].status is Status.UNKNOWN
+    assert by_id["env.FLAG"].status is Status.MATCH and "step 4" in by_id["env.FLAG"].ci.location
+    rows = ci_view(wf)["jobs"][0]["variants"]
+    assert rows[0]["excluded_steps"] == [1, 2] and rows[0]["python_selectors"] == []
+    assert rows[1]["excluded_steps"] == [] and rows[1]["python_selectors"] == ["3.11"]
+    assert rows[0]["unresolved_step_conditions"] == [3]
+    by_id = {f.id: f for f in compare(local, wf, job, 2, ctx).findings}
+    assert by_id["shell.2"].status is Status.DIFFERENCE and by_id["python.1"].status is Status.MATCH
+    job.condition = "github.event_name == 'push'"
+    assert all(
+        f.status not in (Status.MATCH, Status.DIFFERENCE)
+        for f in compare(local, wf, job, 2, ctx).findings
+    )
+    job.condition = False
+    assert compare(local, wf, job, 2, ctx).findings == []
+    assert ci_view(wf)["jobs"][0]["variants"][1]["python_selectors"] == []

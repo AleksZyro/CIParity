@@ -56,7 +56,9 @@ The tool inventory checks absolute host PATH entries for Git, Python, pip, uv, N
 
 The local inspector inventories Python and Node manifests and lockfiles. For PEP 621 `pyproject.toml` metadata it counts static direct dependencies and checks `requires-python` against an explicitly identified interpreter. Dynamic dependency counts stay unknown. A conventional filename or a version constraint cannot establish which packages a CI job installed.
 
-**GitHub Actions.** The inspector reads both YAML extensions, event names, job IDs and names, runner labels, job dependencies, conditions, run defaults, environment scopes and ordered action/run steps. JSON inspection includes safe step IDs, recognised command types and direct references to known step IDs in supported expression fields. Conditions are recorded as present. Display names and raw expressions stay private.
+**GitHub Actions.** The inspector reads both YAML extensions, event names, job IDs and names, runner labels, job dependencies, conditions, run defaults, environment scopes and ordered action/run steps. JSON inspection includes safe step IDs, recognised command types and direct references to known step IDs in supported expression fields. Display names and raw expressions stay private.
+
+The inspector resolves boolean literals and simple step conditions such as `matrix.arch != 'ppc64le'` for ASCII string values. A false guard excludes the job or step from the comparison. For an unresolved guard, a difference remains potential and a match remains unknown. Inventory JSON lists excluded steps and unresolved step conditions per variant. Job-level conditions are interpreted before matrix expansion, without matrix values.
 
 | Declaration | Interpretation |
 | --- | --- |
@@ -64,7 +66,7 @@ The local inspector inventories Python and Node manifests and lockfiles. For PEP
 | `strategy.matrix` | Scalar axes, Cartesian products, partial exclusions and ordered inclusions. Includes can extend surviving original combinations or create an additional variant. |
 | `actions/setup-python` | Quoted numeric major, minor and patch selectors or a direct matrix reference. Each setup step has its own finding. |
 | `defaults.run`, `shell`, `working-directory` | Workflow defaults, job overrides and step overrides. An unnamed hosted Windows shell resolves to pwsh, a container default to sh. An unnamed Unix shell remains unknown because it permits fallback. Portable project-relative directory declarations are comparable. |
-| `env` | Names and local presence only. Each finding cites the first effective declaration. Dynamic environment mappings are marked in the report. |
+| `env` | Names and local presence only. Each finding cites the first applicable declaration, favouring a step with a satisfied guard. Dynamic environment mappings are marked in the report. |
 | `uses`, `run` | Recognised action boundaries and a small set of whole commands. Reusable workflows and opaque actions remain visible. Arbitrary scripts stay private. |
 
 Recognised commands are `pytest`, `python -m pytest`, `uv run pytest`, `uv sync`, `npm ci`, `pip install -r requirements.txt`, `python -m pip install -r requirements.txt` and `python -m pip install -e .`. CIParity compares invocations when their purpose matches. Extra flags, pipelines and multiline scripts require manual inspection.

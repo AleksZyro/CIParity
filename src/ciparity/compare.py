@@ -23,6 +23,7 @@ from .semantics import (
     ci_environment,
     command_kind,
     compare_python,
+    condition_value,
     portable_directory,
     python_selector,
     shell_for,
@@ -86,13 +87,25 @@ def compare(
     ci = ci_environment(job, variant)
     findings: list[Finding] = []
     notes = ["CI evidence describes declarations. Runtime and failure cause are unobserved."]
-    if job.condition is not None:
-        notes.append("Job execution depends on its if condition.")
+    # GitHub evaluates the job-level guard before expanding its matrix.
+    job_guard = condition_value(job.condition, {})
+    if job_guard is False:
+        notes.append("The job condition is false. No comparison applies.")
+        return Report(workflow.path, job.id, index, ci, True, [], notes)
+    if job_guard is None:
+        notes.append("Job execution depends on an unresolved condition.")
+    guards = {s.number: condition_value(s.condition, variant) for s in job.steps}
+    steps = [s for s in job.steps if guards[s.number] is not False]
+    for step in job.steps:
+        if guards[step.number] is False:
+            notes.append(f"Step {step.number} is excluded by its condition in this variant.")
+        elif guards[step.number] is None:
+            notes.append(f"Step {step.number} has an unresolved condition.")
     if ci.container:
         notes.append("Container image contents are unknown. Runner properties describe its host.")
-    if job.dynamic_env or any(s.dynamic_env for s in job.steps):
+    if job.dynamic_env or any(s.dynamic_env for s in steps):
         notes.append("An expression supplies environment names that cannot be enumerated.")
-    if any(step.uses for step in job.steps):
+    if any(step.uses for step in steps):
         notes.append(
             "Action internals and changes to later steps are outside this static comparison."
         )
@@ -108,10 +121,18 @@ def compare(
         impact: str,
         check: str,
         status: Status | None = None,
+        *,
+        step_number: int | None = None,
     ) -> None:
         if len(findings) >= 2000:
             raise Unsupported("The report exceeds the 2,000 finding limit.")
         outcome = status or compare_values(left.value, value)
+        if job_guard is None or (step_number is not None and guards[step_number] is None):
+            if outcome is Status.MATCH:
+                outcome = Status.UNKNOWN
+            elif outcome is Status.DIFFERENCE:
+                outcome = Status.POTENTIAL
+            reason += " Applicability depends on an unresolved condition."
         findings.append(
             Finding(
                 key,
@@ -157,14 +178,16 @@ def compare(
         "Native wheels or binaries can differ.",
         "Check the machine architecture in the job log.",
     )
-    setups: list[Step | None] = [
-        s for s in job.steps if action_kind(s.uses) == "actions/setup-python"
-    ]
+    setups: list[Step | None] = [s for s in steps if action_kind(s.uses) == "actions/setup-python"]
     if not setups:
         setups.append(None)
     for setup in setups:
         version = python_selector(setup, variant) if setup else None
-        location = f"step {setup.number} / setup-python" if setup else "no setup-python declaration"
+        location = (
+            f"step {setup.number} / setup-python"
+            if setup
+            else "no applicable setup-python declaration"
+        )
         record(
             f"python.{setup.number}" if setup else "python",
             "python",
@@ -176,13 +199,19 @@ def compare(
             "Different releases can support different syntax or wheels.",
             "Confirm the test interpreter with python -VV in each environment.",
             compare_python(local.project_python, version),
+            step_number=setup.number if setup else None,
         )
-    seen_env: set[str] = set()
+    # Prefer the first unconditional declaration over an earlier conditional one.
+    env_source: dict[str, int] = {}
+    for step in steps:
+        for name in step.env:
+            if name not in env_source or (
+                guards[env_source[name]] is None and guards[step.number] is True
+            ):
+                env_source[name] = step.number
     local_command = command_kind(context.command)
-    for step in job.steps:
+    for step in steps:
         loc = f"step {step.number}"
-        if step.condition is not None:
-            notes.append(f"Step {step.number} has an unevaluated condition.")
         if action_kind(step.uses) == "opaque action":
             record(
                 f"action.{step.number}",
@@ -195,8 +224,9 @@ def compare(
                 "An action can change later steps.",
                 "Inspect the referenced action at its resolved revision.",
                 Status.UNSUPPORTED,
+                step_number=step.number,
             )
-        for name in sorted(step.env - seen_env):
+        for name in sorted(n for n in step.env if env_source[n] == step.number):
             present = local.environment_presence.get(name)
             presence = {True: "present", False: "absent", None: None}[present]
             record(
@@ -210,8 +240,8 @@ def compare(
                 "A command can branch on variable presence.",
                 "Check presence in the failing step without logging its value.",
                 {True: Status.MATCH, False: Status.POTENTIAL, None: Status.UNKNOWN}[present],
+                step_number=step.number,
             )
-        seen_env.update(step.env)
         if step.command is None:
             continue
         cmd = command_kind(step.command)
@@ -228,6 +258,7 @@ def compare(
             "Uses the effective run defaults and step override.",
             "Quoting and expansion vary by shell.",
             "Check the shell used to start the local command.",
+            step_number=step.number,
         )
         directory = (
             portable_directory(resolve(step.directory, variant))
@@ -258,6 +289,7 @@ def compare(
             "Relative file lookups can start in another directory.",
             "Compare the two workspace-relative directories.",
             dir_status,
+            step_number=step.number,
         )
         record(
             f"command.{step.number}",
@@ -279,6 +311,7 @@ def compare(
                 if same_purpose
                 else Status.UNKNOWN
             ),
+            step_number=step.number,
         )
         if cmd:
             available = local.tools[cmd[2]]["available"]
@@ -293,6 +326,7 @@ def compare(
                 "Tool lookup can fail before tests begin.",
                 "Check the executable and its version in both environments.",
                 Status.UNKNOWN if available else Status.POTENTIAL,
+                step_number=step.number,
             )
         if cmd and cmd[0] in MANIFESTS:
             files = MANIFESTS[cmd[0]]
@@ -310,6 +344,7 @@ def compare(
                 "A missing input can affect installation.",
                 "Check the manifest in this step's working directory.",
                 Status.POTENTIAL if directory == "." and not present_files else Status.UNKNOWN,
+                step_number=step.number,
             )
     if not any(f.category == "dependencies" for f in findings):
         record(

@@ -12,7 +12,14 @@ from rich.table import Table
 from . import __version__
 from .matrix import IDENT, expand
 from .models import LocalEnvironment, Report, Status, Unsupported, Workflow
-from .semantics import action_kind, ci_environment, command_kind, python_selector, shell_for
+from .semantics import (
+    action_kind,
+    ci_environment,
+    command_kind,
+    condition_value,
+    python_selector,
+    shell_for,
+)
 
 EVENTS = {
     "push",
@@ -77,22 +84,37 @@ def ci_view(workflow: Workflow) -> dict[str, Any]:
             if job.reusable:
                 raise Unsupported("Reusable workflow call; target contents are unresolved.")
             variants = expand(job.matrix)
+            job_guard = condition_value(job.condition, {})
             for index, variant in enumerate(variants, 1):
                 ci = ci_environment(job, variant)
+                # The inventory lists declarations for a job that meets its own guard.
+                guards = {s.number: condition_value(s.condition, variant) for s in job.steps}
+                active = [
+                    s for s in job.steps if job_guard is not False and guards[s.number] is not False
+                ]
                 item["variants"].append(
                     {
                         "number": index,
                         "runner": ci.runner,
                         "os": ci.os,
+                        "job_condition": job_guard,
+                        "excluded_steps": [
+                            n for n, permitted in guards.items() if permitted is False
+                        ],
+                        "unresolved_step_conditions": [
+                            n for n, permitted in guards.items() if permitted is None
+                        ],
                         "python_selectors": [
-                            python_selector(s, variant)
-                            for s in job.steps
+                            python_selector(s, variant) if guards[s.number] is True else None
+                            for s in active
                             if action_kind(s.uses) == "actions/setup-python"
                         ],
                         "run_shells": sorted(
                             {
-                                shell_for(s, ci, variant) or "unknown"
-                                for s in job.steps
+                                (shell_for(s, ci, variant) or "unknown")
+                                if guards[s.number] is True
+                                else "unknown"
+                                for s in active
                                 if s.command is not None
                             }
                         ),
